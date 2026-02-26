@@ -1,210 +1,305 @@
-# ====================================================================
-# Makefile para projeto Guile com suporte automático a guile-gi
-# ====================================================================
+# ============================================================================
+# CONFIGURAÇÃO GERAL
+# ============================================================================
 
-# Configurações do projeto
-TARGET   = hello
-SCM      = hello.scm
-GO       = hello.go
-MAIN     = main.c
+SHELL := /bin/bash
+CC := gcc
+CFLAGS := -Wall -Wextra -O2 -g $(shell pkg-config --cflags guile-3.0 2>/dev/null || echo "-I/usr/include/guile/3.0")
+LDFLAGS := $(shell pkg-config --libs guile-3.0 2>/dev/null || echo "-lguile-3.0") -ldl -lpthread
 
-# Configurações do guile-gi
-GI_REPO  = https://github.com/spk121/guile-gi.git
-GI_DIR   = guile-gi
-GI_BUILD_DIR = $(GI_DIR)/build
-GI_INSTALL_PREFIX = $(shell pwd)/gi-install
+# Paths do Guile-GI
+GUILE_GI_ROOT := $(CURDIR)/guile-gi
+GUILE_GI_BUILD := $(GUILE_GI_ROOT)/build
+GUILE_GI_MODULE_SRC := $(GUILE_GI_ROOT)/module
+GUILE_GI_MODULE_BUILD := $(GUILE_GI_BUILD)/module
+GUILE_GI_MODULE_GI := $(GUILE_GI_MODULE_BUILD)/gi
+GUILE_GI_LIBS := $(GUILE_GI_BUILD)/.libs
 
-# Diretórios locais para instalação
-GI_LIB_DIR = $(GI_INSTALL_PREFIX)/lib
-GI_INCLUDE_DIR = $(GI_INSTALL_PREFIX)/include
-GI_GO_DIR = $(GI_INSTALL_PREFIX)/lib/guile/3.0/site-ccache
-
-# Diretórios de origem
-GI_SO_DIR = $(GI_BUILD_DIR)/.libs
-GI_GO_SRC_DIR = $(GI_BUILD_DIR)/module
-
-# Diretório de typelibs
-TYPELIB_DIR = /usr/lib/x86_64-linux-gnu/girepository-1.0
-
-# Lista de objetos
-OBJS = hello.o \
-       typelibs.o \
-       gi.o \
-       gi_repository.o \
-       gi_compat.o \
-       gi_config.o \
-       gi_core_generics.o \
-       gi_logging.o \
-       gi_oop.o \
-       gi_types.o \
-       gi_util.o \
-       gi_girepository.o \
-       libguile_gi.o \
-       libguile_girepository.o
+# Variáveis de ambiente para o Guile
+export GUILE_LOAD_PATH := $(GUILE_GI_MODULE_SRC):$(GUILE_LOAD_PATH)
+export GUILE_LOAD_COMPILED_PATH := $(GUILE_GI_MODULE_BUILD):$(GUILE_LOAD_COMPILED_PATH)
+export LD_LIBRARY_PATH := $(GUILE_GI_LIBS):$(LD_LIBRARY_PATH)
+export GI_TYPELIB_PATH := /usr/lib/x86_64-linux-gnu/girepository-1.0:$(GI_TYPELIB_PATH)
 
 # Ferramentas
-CC       = gcc
-CFLAGS   = -O2 -Wall
-GUILE_FLAGS = $(shell pkg-config --cflags --libs guile-3.0)
-GUILD    = guild
+GUILD := guild-3.0
+GUILD_COMPILE := $(GUILD) compile
+OBJCOPY := objcopy
 
-OBJCOPY_FLAGS = --input-target binary --output-target elf64-x86-64 \
-                --binary-architecture i386:x86-64 \
-                --add-section .note.GNU-stack=/dev/null
+# ============================================================================
+# ARQUIVOS EMBUTIDOS
+# ============================================================================
 
-# ====================================================================
-# Regras principais
-# ====================================================================
+HELLO_GO := hello.go
+HELLO_GO_OBJ := hello.go.o
 
-.PHONY: all clean distclean clone-gi build-gi install-gi symbols
+# Módulos no subdiretório gi/
+GI_SUBMODULES := compat config core-generics girepository logging oop types util
+GI_SUBMODULE_OBJS := $(foreach mod,$(GI_SUBMODULES),gi_$(mod).go.o)
 
-all: clone-gi build-gi install-gi $(TARGET)
+# Módulos na raiz de module/
+GI_ROOT_MODULES := gi repository
+GI_ROOT_MODULE_OBJS := $(foreach mod,$(GI_ROOT_MODULES),$(mod).go.o)
 
-# Clona o repositório
-clone-gi:
-	@if [ ! -d "$(GI_DIR)" ]; then \
-		echo "Clonando guile-gi..."; \
-		git clone --depth 1 $(GI_REPO) $(GI_DIR); \
+GI_GO_OBJS := $(GI_ROOT_MODULE_OBJS) $(GI_SUBMODULE_OBJS)
+
+GI_SO_FILES := libguile-gi.so libguile-girepository.so
+GI_SO_OBJS := $(foreach lib,$(GI_SO_FILES),$(lib).o)
+
+TYPELIBS_TAR := typelibs.tar
+TYPELIBS_TAR_OBJ := typelibs.tar.o
+
+EMBEDDED_OBJS := $(HELLO_GO_OBJ) $(GI_GO_OBJS) $(GI_SO_OBJS) $(TYPELIBS_TAR_OBJ)
+
+# ============================================================================
+# ALVOS PRINCIPAIS
+# ============================================================================
+
+.PHONY: all clean distclean hello run debug info
+
+all: hello
+
+hello: main.c $(EMBEDDED_OBJS)
+	@echo "=== Linkando hello binário ==="
+	$(CC) $(CFLAGS) -o $@ main.c $(EMBEDDED_OBJS) $(LDFLAGS)
+	@echo "✓ Binário 'hello' gerado com sucesso!"
+
+run: hello
+	./hello
+
+debug: hello
+	./hello 2>&1 | grep "⏱️"
+
+# ============================================================================
+# COMPILAÇÃO GUILLE-GI
+# ============================================================================
+
+.PHONY: build-gi
+
+build-gi: $(GUILE_GI_BUILD)/libguile-gi.so
+
+$(GUILE_GI_ROOT)/.cloned:
+	@echo "=== Clonando guile-gi ==="
+	@if [ -d "$(GUILE_GI_ROOT)" ]; then \
+		echo "Diretório guile-gi já existe, atualizando..."; \
+		cd $(GUILE_GI_ROOT) && git pull --rebase; \
 	else \
-		echo "guile-gi já existe."; \
+		git clone https://github.com/spk121/guile-gi.git $(GUILE_GI_ROOT); \
 	fi
+	touch $@
 
-# Compila o guile-gi
-build-gi: clone-gi
-	@echo "Compilando guile-gi..."
-	cd $(GI_DIR) && if [ ! -f configure ]; then autoreconf -i -f; fi
-	mkdir -p $(GI_BUILD_DIR)
-	cd $(GI_BUILD_DIR) && ../configure --prefix=/usr
-	$(MAKE) -C $(GI_BUILD_DIR)
-	@echo "✅ Build concluído."
+$(GUILE_GI_BUILD)/libguile-gi.so: $(GUILE_GI_ROOT)/.cloned
+	@echo "=== Preparando build do guile-gi ==="
+	
+	mkdir -p $(GUILE_GI_BUILD)
+	mkdir -p $(GUILE_GI_BUILD)/test
+	
+	cd $(GUILE_GI_ROOT) && libtoolize --force --copy 2>/dev/null || true
+	cd $(GUILE_GI_ROOT) && aclocal -I m4 --install 2>/dev/null || true
+	cd $(GUILE_GI_ROOT) && autoreconf -fi 2>/dev/null || true
+	
+	@echo "=== Configurando guile-gi ==="
+	cd $(GUILE_GI_BUILD) && \
+		env MAKEINFO=true \
+		../configure \
+			--prefix=$(CURDIR)/guile-gi-install \
+			--disable-dependency-tracking \
+			--quiet || (echo "Configure falhou, veja logs acima" && exit 1)
+	
+	@echo "=== Compilando guile-gi ==="
+	$(MAKE) -C $(GUILE_GI_BUILD) MAKEINFO=true || (echo "Build falhou, veja logs acima" && exit 1)
+	
+	@echo "✓ guile-gi compilado com sucesso!"
 
-# Instala o guile-gi localmente
-install-gi: build-gi
-	@echo "Instalando guile-gi..."
-	mkdir -p $(GI_LIB_DIR) $(GI_INCLUDE_DIR) $(GI_GO_DIR)/gi
-	cp -vf $(GI_SO_DIR)/libguile-gi.so* $(GI_LIB_DIR)/ 2>/dev/null || true
-	cp -vf $(GI_SO_DIR)/libguile-girepository.so* $(GI_LIB_DIR)/ 2>/dev/null || true
-	cp -vf $(GI_DIR)/src/*.h $(GI_INCLUDE_DIR)/ 2>/dev/null || true
-	cp -vf $(GI_GO_SRC_DIR)/gi.go $(GI_GO_DIR)/ 2>/dev/null || true
-	cp -vf $(GI_GO_SRC_DIR)/gi/*.go $(GI_GO_DIR)/gi/ 2>/dev/null || true
-	@echo "✅ Instalação concluída."
+# ============================================================================
+# COMPILAÇÃO DO CÓDIGO SCHEME
+# ============================================================================
 
-# ====================================================================
-# Regras para os objetos
-# ====================================================================
+$(HELLO_GO): hello.scm | build-gi
+	@echo "=== Compilando hello.go ==="
+	$(GUILD_COMPILE) -o $@ $<
 
-# hello.o
-hello.o: $(GO)
-	objcopy $(OBJCOPY_FLAGS) $< $@
+# ============================================================================
+# EMBEDDING VIA OBJCOPY
+# ============================================================================
 
-$(GO): $(SCM)
-	$(GUILD) compile -o $@ $<
+# hello.go.o (arquivo local)
+hello.go.o: hello.go
+	@echo "=== Embedding hello.go ==="
+	$(OBJCOPY) --input-target=binary \
+	           --output-target=elf64-x86-64 \
+	           --rename-section .data=.rodata,alloc,load,readonly,data,contents \
+	           $< $@
 
-# Regras para arquivos .go na raiz do GI_GO_DIR
-gi.o: $(GI_GO_DIR)/gi.go
-	cp $< gi.tmp
-	objcopy $(OBJCOPY_FLAGS) gi.tmp $@
-	rm -f gi.tmp
+# gi.go (raiz de module/)
+gi.go.o: $(GUILE_GI_MODULE_BUILD)/gi.go | build-gi
+	@echo "=== Embedding gi.go ==="
+	cp $(GUILE_GI_MODULE_BUILD)/gi.go gi.go
+	$(OBJCOPY) --input-target=binary --output-target=elf64-x86-64 \
+	           --rename-section .data=.rodata,alloc,load,readonly,data,contents \
+	           gi.go $@
+	rm -f gi.go
 
-# Regras para arquivos .go no subdiretório gi/
-gi_repository.o: $(GI_GO_DIR)/gi/repository.go
-	cp $< repository.tmp
-	objcopy $(OBJCOPY_FLAGS) repository.tmp $@
-	rm -f repository.tmp
+# repository.go (gi/repository.go)
+repository.go.o: $(GUILE_GI_MODULE_GI)/repository.go | build-gi
+	@echo "=== Embedding repository.go ==="
+	cp $(GUILE_GI_MODULE_GI)/repository.go repository.go
+	$(OBJCOPY) --input-target=binary --output-target=elf64-x86-64 \
+	           --rename-section .data=.rodata,alloc,load,readonly,data,contents \
+	           repository.go $@
+	rm -f repository.go
 
-gi_compat.o: $(GI_GO_DIR)/gi/compat.go
-	cp $< compat.tmp
-	objcopy $(OBJCOPY_FLAGS) compat.tmp $@
-	rm -f compat.tmp
+# Módulos no subdiretório gi/
+gi_compat.go.o: $(GUILE_GI_MODULE_GI)/compat.go | build-gi
+	@echo "=== Embedding gi/compat.go ==="
+	cp $(GUILE_GI_MODULE_GI)/compat.go gi_compat.go
+	$(OBJCOPY) --input-target=binary --output-target=elf64-x86-64 \
+	           --rename-section .data=.rodata,alloc,load,readonly,data,contents \
+	           gi_compat.go $@
+	rm -f gi_compat.go
 
-gi_config.o: $(GI_GO_DIR)/gi/config.go
-	cp $< config.tmp
-	objcopy $(OBJCOPY_FLAGS) config.tmp $@
-	rm -f config.tmp
+gi_config.go.o: $(GUILE_GI_MODULE_GI)/config.go | build-gi
+	cp $(GUILE_GI_MODULE_GI)/config.go gi_config.go
+	$(OBJCOPY) --input-target=binary --output-target=elf64-x86-64 \
+	           --rename-section .data=.rodata,alloc,load,readonly,data,contents \
+	           gi_config.go $@
+	rm -f gi_config.go
 
-gi_core_generics.o: $(GI_GO_DIR)/gi/core-generics.go
-	cp $< core_generics.tmp
-	objcopy $(OBJCOPY_FLAGS) core_generics.tmp $@
-	rm -f core_generics.tmp
+gi_core-generics.go.o: $(GUILE_GI_MODULE_GI)/core-generics.go | build-gi
+	cp $(GUILE_GI_MODULE_GI)/core-generics.go gi_core-generics.go
+	$(OBJCOPY) --input-target=binary --output-target=elf64-x86-64 \
+	           --rename-section .data=.rodata,alloc,load,readonly,data,contents \
+	           gi_core-generics.go $@
+	rm -f gi_core-generics.go
 
-gi_logging.o: $(GI_GO_DIR)/gi/logging.go
-	cp $< logging.tmp
-	objcopy $(OBJCOPY_FLAGS) logging.tmp $@
-	rm -f logging.tmp
+gi_girepository.go.o: $(GUILE_GI_MODULE_GI)/girepository.go | build-gi
+	cp $(GUILE_GI_MODULE_GI)/girepository.go gi_girepository.go
+	$(OBJCOPY) --input-target=binary --output-target=elf64-x86-64 \
+	           --rename-section .data=.rodata,alloc,load,readonly,data,contents \
+	           gi_girepository.go $@
+	rm -f gi_girepository.go
 
-gi_oop.o: $(GI_GO_DIR)/gi/oop.go
-	cp $< oop.tmp
-	objcopy $(OBJCOPY_FLAGS) oop.tmp $@
-	rm -f oop.tmp
+gi_logging.go.o: $(GUILE_GI_MODULE_GI)/logging.go | build-gi
+	cp $(GUILE_GI_MODULE_GI)/logging.go gi_logging.go
+	$(OBJCOPY) --input-target=binary --output-target=elf64-x86-64 \
+	           --rename-section .data=.rodata,alloc,load,readonly,data,contents \
+	           gi_logging.go $@
+	rm -f gi_logging.go
 
-gi_types.o: $(GI_GO_DIR)/gi/types.go
-	cp $< types.tmp
-	objcopy $(OBJCOPY_FLAGS) types.tmp $@
-	rm -f types.tmp
+gi_oop.go.o: $(GUILE_GI_MODULE_GI)/oop.go | build-gi
+	cp $(GUILE_GI_MODULE_GI)/oop.go gi_oop.go
+	$(OBJCOPY) --input-target=binary --output-target=elf64-x86-64 \
+	           --rename-section .data=.rodata,alloc,load,readonly,data,contents \
+	           gi_oop.go $@
+	rm -f gi_oop.go
 
-gi_util.o: $(GI_GO_DIR)/gi/util.go
-	cp $< util.tmp
-	objcopy $(OBJCOPY_FLAGS) util.tmp $@
-	rm -f util.tmp
+gi_types.go.o: $(GUILE_GI_MODULE_GI)/types.go | build-gi
+	cp $(GUILE_GI_MODULE_GI)/types.go gi_types.go
+	$(OBJCOPY) --input-target=binary --output-target=elf64-x86-64 \
+	           --rename-section .data=.rodata,alloc,load,readonly,data,contents \
+	           gi_types.go $@
+	rm -f gi_types.go
 
-gi_girepository.o: $(GI_GO_DIR)/gi/girepository.go
-	cp $< girepository.tmp
-	objcopy $(OBJCOPY_FLAGS) girepository.tmp $@
-	rm -f girepository.tmp
+gi_util.go.o: $(GUILE_GI_MODULE_GI)/util.go | build-gi
+	cp $(GUILE_GI_MODULE_GI)/util.go gi_util.go
+	$(OBJCOPY) --input-target=binary --output-target=elf64-x86-64 \
+	           --rename-section .data=.rodata,alloc,load,readonly,data,contents \
+	           gi_util.go $@
+	rm -f gi_util.go
 
-# Regras para bibliotecas .so
-libguile_gi.o: $(GI_LIB_DIR)/libguile-gi.so
-	cp $< libguile-gi.tmp
-	objcopy $(OBJCOPY_FLAGS) libguile-gi.tmp $@
-	rm -f libguile-gi.tmp
+# ✅ Bibliotecas .so (REGRAS EXPLÍCITAS)
+libguile-gi.so.o: $(GUILE_GI_LIBS)/libguile-gi.so | build-gi
+	@echo "=== Embedding libguile-gi.so ==="
+	cp $(GUILE_GI_LIBS)/libguile-gi.so libguile-gi.so
+	$(OBJCOPY) --input-target=binary --output-target=elf64-x86-64 \
+	           --rename-section .data=.rodata,alloc,load,readonly,data,contents \
+	           libguile-gi.so $@
+	rm -f libguile-gi.so
 
-libguile_girepository.o: $(GI_LIB_DIR)/libguile-girepository.so
-	cp $< libguile-girepository.tmp
-	objcopy $(OBJCOPY_FLAGS) libguile-girepository.tmp $@
-	rm -f libguile-girepository.tmp
+libguile-girepository.so.o: $(GUILE_GI_LIBS)/libguile-girepository.so | build-gi
+	@echo "=== Embedding libguile-girepository.so ==="
+	cp $(GUILE_GI_LIBS)/libguile-girepository.so libguile-girepository.so
+	$(OBJCOPY) --input-target=binary --output-target=elf64-x86-64 \
+	           --rename-section .data=.rodata,alloc,load,readonly,data,contents \
+	           libguile-girepository.so $@
+	rm -f libguile-girepository.so
 
-# typelibs
-typelibs.tar:
-	tar -cf $@ -C $(TYPELIB_DIR) .
+# typelibs.tar.o
+$(TYPELIBS_TAR_OBJ): $(TYPELIBS_TAR)
+	@echo "=== Embedding $< ==="
+	$(OBJCOPY) --input-target=binary \
+	           --output-target=elf64-x86-64 \
+	           --rename-section .data=.rodata,alloc,load,readonly,data,contents \
+	           $< $@
 
-typelibs.o: typelibs.tar
-	cp $< typelibs.tmp
-	objcopy $(OBJCOPY_FLAGS) typelibs.tmp $@
-	rm -f typelibs.tmp
+# ============================================================================
+# GERAR TYPELIBS.TAR (SEM PREFIXO ./)
+# ============================================================================
 
-# ====================================================================
-# Link do executável
-# ====================================================================
+$(TYPELIBS_TAR): | build-gi
+	@echo "=== Coletando typelibs do sistema ==="
+	@rm -rf typelib-tmp
+	@mkdir -p typelib-tmp
+	@# GTK4 e dependências diretas
+	cp /usr/lib/x86_64-linux-gnu/girepository-1.0/Gtk-4.0.typelib typelib-tmp/ 2>/dev/null || echo "⚠️ Gtk-4.0 não encontrado"
+	cp /usr/lib/x86_64-linux-gnu/girepository-1.0/Gdk-4.0.typelib typelib-tmp/ 2>/dev/null || true
+	cp /usr/lib/x86_64-linux-gnu/girepository-1.0/Gsk-4.0.typelib typelib-tmp/ 2>/dev/null || true
+	cp /usr/lib/x86_64-linux-gnu/girepository-1.0/Gio-2.0.typelib typelib-tmp/ 2>/dev/null || true
+	cp /usr/lib/x86_64-linux-gnu/girepository-1.0/GObject-2.0.typelib typelib-tmp/ 2>/dev/null || true
+	cp /usr/lib/x86_64-linux-gnu/girepository-1.0/GLib-2.0.typelib typelib-tmp/ 2>/dev/null || true
+	cp /usr/lib/x86_64-linux-gnu/girepository-1.0/GdkPixbuf-2.0.typelib typelib-tmp/ 2>/dev/null || true
+	cp /usr/lib/x86_64-linux-gnu/girepository-1.0/Pango-1.0.typelib typelib-tmp/ 2>/dev/null || true
+	cp /usr/lib/x86_64-linux-gnu/girepository-1.0/HarfBuzz-0.0.typelib typelib-tmp/ 2>/dev/null || true
+	@# ✅ NOVO: Graphene (dependência do GTK4)
+	cp /usr/lib/x86_64-linux-gnu/girepository-1.0/Graphene-1.0.typelib typelib-tmp/ 2>/dev/null || echo "⚠️ Graphene-1.0 não encontrado"
+	@# Criar tar SEM prefixo ./
+	cd typelib-tmp && tar -cf ../$@ *
+	@rm -rf typelib-tmp
+	@echo "✓ typelibs.tar gerado com $(tar -tf $@ | wc -l) arquivos"
 
-$(TARGET): $(MAIN) $(OBJS)
-	$(CC) $(CFLAGS) -I$(GI_INCLUDE_DIR) $(MAIN) $(OBJS) -o $@ \
-		-L$(GI_LIB_DIR) -lguile-gi \
-		-Wl,-rpath,$(GI_LIB_DIR) \
-		$(GUILE_FLAGS)
-	@echo "✅ Executável criado: ./$@"
-
-# ====================================================================
-# Utilidades
-# ====================================================================
-
-symbols:
-	@echo "=== Símbolos nos arquivos .o ==="
-	@for obj in $(OBJS); do \
-		if [ -f "$$obj" ]; then \
-			echo "\n$$obj:"; \
-			nm $$obj 2>/dev/null | grep -E '_binary.*_(start|end)' | sed 's/^/  /'; \
-		fi \
-	done
+# ============================================================================
+# LIMPEZA
+# ============================================================================
 
 clean:
-	rm -f $(GO) $(OBJS) $(TARGET) typelibs.tar *.tmp
+	@echo "=== Limpando arquivos intermediários ==="
+	rm -f hello hello.go $(EMBEDDED_OBJS)
+	rm -f gi.go repository.go gi_*.go
+	rm -f libguile-gi.so libguile-girepository.so
+	rm -f $(TYPELIBS_TAR)
+	rm -rf typelib-tmp
+	rm -rf guile-gi-install
 
 distclean: clean
-	rm -rf $(GI_DIR) $(GI_INSTALL_PREFIX)
+	@echo "=== Limpando build do guile-gi ==="
+	rm -rf $(GUILE_GI_BUILD)
+	rm -f $(GUILE_GI_ROOT)/.cloned
+	rm -rf $(GUILE_GI_ROOT)/autom4te.cache
+	rm -f $(GUILE_GI_ROOT)/configure
+	rm -f $(GUILE_GI_ROOT)/aclocal.m4
+	rm -f $(GUILE_GI_ROOT)/Makefile.in
 
-debug:
-	@echo "GI_LIB_DIR: $(GI_LIB_DIR)"
-	@echo "GI_GO_DIR: $(GI_GO_DIR)"
-	@ls -la $(GI_LIB_DIR)/*.so* 2>/dev/null || true
-	@ls -la $(GI_GO_DIR)/*.go 2>/dev/null || true
-	@ls -la $(GI_GO_DIR)/gi/*.go 2>/dev/null || true
+# ============================================================================
+# DEBUG E INFORMAÇÃO
+# ============================================================================
+
+info:
+	@echo "=== Estrutura do guile-gi ==="
+	@echo "Módulos na raiz:"
+	@ls $(GUILE_GI_MODULE_BUILD)/*.go 2>/dev/null || echo "  (nenhum)"
+	@echo "Módulos em gi/:"
+	@ls $(GUILE_GI_MODULE_GI)/*.go 2>/dev/null || echo "  (nenhum)"
+	@echo ""
+	@echo "=== Objetos para embed ==="
+	@echo "EMBEDDED_OBJS: $(EMBEDDED_OBJS)"
+
+check-symbols: hello
+	@echo "=== Verificando símbolos _binary_* ==="
+	nm hello | grep "_binary_" | head -30
+
+test-load: build-gi
+	@echo "=== Testando carregamento do módulo (gi) ==="
+	GUILE_LOAD_PATH=$(GUILE_LOAD_PATH) \
+	GUILE_LOAD_COMPILED_PATH=$(GUILE_LOAD_COMPILED_PATH) \
+	LD_LIBRARY_PATH=$(LD_LIBRARY_PATH) \
+	guile -c '(use-modules (gi repository)) (require "Gtk" "4.0") (display "✓ (gi) carregado!\n")'

@@ -18,15 +18,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libgmp-dev \
     libgirepository1.0-dev \
     gir1.2-gtk-4.0 \
+    libtool \
+    libtool-bin \
+    autoconf \
+    automake \
+    autotools-dev \
+    texinfo \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
-
-# RUN git clone --depth=1 https://github.com/spk121/guile-gi.git /tmp/guile-gi \
-#     && cd /tmp/guile-gi \
-#     && autoreconf -fiv \
-#     && ./configure \
-#     && make -j$(nproc) \
-#     && make install \
-#     && ldconfig \
-#     && rm -rf /tmp/guile-gi
 
 RUN echo "/usr/lib/wsl/lib" > /etc/ld.so.conf.d/nvidia.conf && ldconfig
